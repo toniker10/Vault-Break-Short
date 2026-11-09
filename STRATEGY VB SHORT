@@ -1,0 +1,78 @@
+//@version=5
+strategy("Vault Break SHORT (30m NQ) - TP29 / SL40", overlay=true, pyramiding=0,
+     initial_capital=100000, default_qty_type=strategy.fixed, default_qty_value=1,
+     commission_type=strategy.commission.cash_per_contract, commission_value=1.0,
+     slippage=2, calc_on_every_tick=false)
+
+// ---------- ΡΥΘΜΙΣΕΙΣ ----------
+K      = input.float(0.5, "K (φράγμα = άνοιγμα − K × ATR)", minval=0.1, step=0.05)
+ATRN   = input.int(20, "ATR ημέρες", minval=5, maxval=20)
+TP_PTS = input.float(29.0, "Take Profit (points)", minval=1, step=1)
+SL_PTS = input.float(40.0, "Stop Loss (points)", minval=1, step=1)
+RISK_PCT = input.float(3.5, "Ρίσκο ανά trade (% του λογαριασμού)", minval=0.1, step=0.1)
+ACCOUNT  = input.float(100000.0, "Μέγεθος λογαριασμού ($)")
+FIRST_SIG = 570      // 09:30 CT
+LAST_SIG  = 840      // 14:00 CT
+EXIT_M    = 870      // 14:30 CT
+TZ = "America/Chicago"
+
+// ---------- ΗΜΕΡΗΣΙΟ ΑΝΟΙΓΜΑ ΚΑΙ ATR ----------
+var float dayO = na
+var float dayH = na
+var float dayL = na
+var float prevC = na
+var int   dayBars = 0
+var bool  validDay = false
+var bool  traded = false
+var float[] trs = array.new_float()
+
+newDay = na(time[1]) or dayofmonth(time, TZ) != dayofmonth(time[1], TZ)
+if newDay
+    if not na(dayH) and validDay and dayBars >= 20
+        float dtr = na(prevC) ? dayH - dayL : math.max(dayH - dayL, math.abs(dayH - prevC), math.abs(dayL - prevC))
+        array.push(trs, dtr)
+        if array.size(trs) > 20
+            array.shift(trs)
+    if not na(close[1])
+        prevC := close[1]
+    dayO := open
+    dayH := high
+    dayL := low
+    dayBars := 1
+    validDay := hour(time, TZ) == 0 and minute(time, TZ) < 30
+    traded := false
+else
+    dayH := math.max(dayH, high)
+    dayL := math.min(dayL, low)
+    dayBars += 1
+
+float atrSum = 0.0
+int   nTr = array.size(trs)
+if nTr >= ATRN
+    for i = nTr - ATRN to nTr - 1
+        atrSum += array.get(trs, i)
+float atrVal = nTr >= ATRN ? atrSum / ATRN : na
+float barrier = dayO - K * atrVal
+
+// ---------- ΜΕΓΕΘΟΣ ΘΕΣΗΣ ----------
+float slipUsd    = 2.0 * 2.0 * syminfo.mintick * syminfo.pointvalue
+float riskPerCon = SL_PTS * syminfo.pointvalue + slipUsd + 2.0 * 1.0
+float maxRiskUsd = ACCOUNT * RISK_PCT / 100.0
+int   qty        = int(math.floor(maxRiskUsd / riskPerCon))
+
+// ---------- ΣΗΜΑ ΚΑΙ ΕΙΣΟΔΟΣ (SHORT) ----------
+int tod = hour(time, TZ) * 60 + minute(time, TZ)
+bool sig = qty >= 1 and validDay and not na(barrier) and close < barrier and tod >= FIRST_SIG and tod <= LAST_SIG and not traded and strategy.position_size == 0
+
+if sig
+    traded := true
+    strategy.entry("S", strategy.short, qty=qty)
+    strategy.exit("X", "S", profit = TP_PTS / syminfo.mintick, loss = SL_PTS / syminfo.mintick)
+
+// ---------- ΧΡΟΝΙΚΗ ΕΞΟΔΟΣ 14:30 CT ----------
+if strategy.position_size < 0 and tod >= EXIT_M
+    strategy.close("S", comment="14:30 CT")
+
+plot(validDay ? barrier : na, "Noise barrier", color=color.orange, style=plot.style_linebr)
+plot(validDay ? dayO : na, "Midnight open", color=color.gray, style=plot.style_linebr)
+bgcolor(sig ? color.new(color.red, 85) : na)
